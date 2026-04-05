@@ -1,0 +1,31 @@
+{
+  "name": "ain-al-balad_backend",
+  "description": "This project was bootstrapped with Fastify-CLI Then Heavily Modified By Me :).",
+  "main": "server.ts",
+  "module": "server.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun  run ./src/server.ts",
+    "dev": "bun  --watch run ./src/server.ts",
+    "compile": "rm -rf ./build/* && bun  run ./build-standalone-server.ts"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/jwt": "^10.0.0",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^9.0.0",
+    "@types/minimist": "^1.2.5",
+    "date-fns": "^4.1.0",
+    "fastify": "^5.7.4",
+    "fastify-plugin": "^5.1.0",
+    "minimist": "^1.2.8"
+  }
+}
