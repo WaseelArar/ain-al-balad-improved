@@ -1,0 +1,235 @@
+14:48تقرير كامل لجميع التحسينات - مشروع عين على البلد 🚀
+
+1. إصلاحات (Bug Fixes)
+ain-al-balad-frontend/src/lib/api/api.ts
+المشكلة: الـ baseUrl كان hardcoded على localhost:3000 يعني الموقع ما بيشتغل على أي سيرفر غير جهازك.
+الإصلاح:
+ts// ❌ قبل
+export const baseUrl = "http://localhost:3000";
+
+// ✅ بعد
+const getApiEndPoint = (): string => {
+  if (typeof window !== "undefined") {
+    const isLocalDev = window.location.hostname === "localhost"
+                    || window.location.hostname === "127.0.0.1";
+    if (!isLocalDev) {
+      return `${window.location.protocol}//${window.location.host}`;
+    }
+  }
+  return import.meta.env.VITE_API_URL || "http://localhost:3000";
+};
+export const baseUrl = getApiEndPoint();
+إضافة: interceptor يرجع المستخدم لصفحة login تلقائياً إذا انتهى الـ token:
+tsapiInstance.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem("user");
+      window.location.href = "/auth/login";
+    }
+    return Promise.reject(error);
+  }
+);
+
+ain-al-balad-frontend/src/app.html
+المشكلة: اللغة كانت English بينما الموقع عربي بالكامل.
+html<!-- ❌ قبل -->
+<html lang="en">
+
+<!-- ✅ بعد -->
+<html lang="ar">
+
+ain-al-balad-backend/src/routes/auth/regions/main.ts
+مشكلة 1: الـ GET /regions كان يجيب name بس وينسى description.
+ts// ❌ قبل
+"SELECT regionsId, name FROM regions ORDER BY name ASC"
+
+// ✅ بعد
+"SELECT regionsId, name, description FROM regions ORDER BY name ASC"
+مشكلة 2: خطأ إملائي في الحذف regionId بدل regionsId يعني الحذف كان يفشل دائماً.
+ts// ❌ قبل
+"SELECT usersId FROM users WHERE regionId = ? LIMIT 1"
+
+// ✅ بعد
+"SELECT usersId FROM users WHERE regionsId = ? LIMIT 1"
+
+ain-al-balad-backend/src/lib/migrate/sqlite_migrations.ts
+المشكلة: في migration v4 كان في \`` بدل ``  `` يسبب خطأ syntax عند تشغيل السيرفر.
+ts// ❌ قبل
+    \`,
+  },
+
+// ✅ بعد
+    `,
+  },
+
+2. تحسينات على الملفات الموجودة
+ain-al-balad-backend/src/routes/app/issues/getIssues.ts
+التحسينات:
+
+إضافة عدد التأكيدات (confirmCount) مع كل بلاغ
+إضافة userConfirmed عشان الـ frontend يعرف إذا المستخدم الحالي أكّد البلاغ
+البحث صار يشمل title أيضاً مش بس description وlocation
+حماية: حد أقصى للـ limit (100) وحد أدنى للـ page (1) عشان ما يستغل أحد الـ API
+حد أقصى لطول البحث (100 حرف)
+
+ts// ✅ إضافة عدد التأكيدات في الـ query
+SELECT
+  issues.*,
+  users.username,
+  COALESCE(r.reactionCount, 0) as confirmCount,
+  CASE WHEN ur.usersId IS NOT NULL THEN 1 ELSE 0 END as userConfirmed
+FROM issues
+LEFT JOIN (
+  SELECT issuesId, COUNT(*) as reactionCount
+  FROM reactions GROUP BY issuesId
+) r ON issues.issuesId = r.issuesId
+LEFT JOIN reactions ur ON issues.issuesId = ur.issuesId AND ur.usersId = ?
+
+ain-al-balad-backend/src/routes/app/issues/postIssue.ts
+التحسينات:
+
+إضافة حقل title للبلاغ
+validation: الوصف لازم يكون 10 أحرف على الأقل
+validation: الوصف ما يتجاوز 1000 حرف
+إرسال إشعار تلقائي للمشرفين عند إنشاء بلاغ عام جديد
+
+ts// ✅ validation جديد
+if (!description || description.trim().length < 10)
+  throw new CustomError("وصف البلاغ يجب أن يكون 10 أحرف على الأقل", 400);
+if (description.length > 1000)
+  throw new CustomError("وصف البلاغ طويل جداً", 400);
+
+// ✅ إشعار للمشرفين
+if (!privateIssue) {
+  const admins = await app.db.select(
+    "SELECT usersId FROM users WHERE role IN ('ADMIN','MUNICIPAL') AND isActive=1"
+  );
+  for (const admin of admins) {
+    await createNotification(app.db, admin.usersId, `بلاغ جديد: ${description.substring(0,50)}...`, "new_issue", result.lastInsertId);
+  }
+}
+
+ain-al-balad-backend/src/routes/app/issues/comments/postComment.ts
+التحسينات:
+
+منع التعليق على البلاغات المغلقة (للمواطنين العاديين فقط)
+حد أقصى 500 حرف للتعليق
+إرسال إشعار لصاحب البلاغ عند وصول تعليق جديد
+
+ts// ✅ منع التعليق على المغلق
+if (issue.solved && user.role === "USER")
+  return reply.code(403).send({ message: "لا يمكن التعليق على بلاغ مغلق" });
+
+// ✅ إشعار لصاحب البلاغ
+if (issue.usersId !== user.usersId) {
+  await createNotification(db, issue.usersId,
+    `${user.username} علّق على بلاغك`, "comment", Number(issuesId));
+}
+
+ain-al-balad-backend/src/routes/app/issues/toggleIssueSolved.ts
+التحسين: إرسال إشعار لصاحب البلاغ عند تغيير حالته + تحديث updatedAt.
+ts// ✅ تحديث updatedAt
+"UPDATE issues SET solved = ?, updatedAt = datetime('now') WHERE issuesId = ?"
+
+// ✅ إشعار لصاحب البلاغ
+const msg = solved
+  ? `تم حل بلاغك: "${existingIssue.description.substring(0, 40)}..."`
+  : `تم إعادة فتح بلاغك: "${existingIssue.description.substring(0, 40)}..."`;
+await createNotification(app.db, existingIssue.usersId, msg, "status_change", Number(issuesId));
+
+ain-al-balad-frontend/src/lib/blocks/Navbar.svelte
+التحسينات:
+
+إضافة جرس إشعارات 🔔 مع عداد يظهر عدد الإشعارات غير المقروءة
+قائمة منسدلة تظهر الإشعارات عند الضغط على الجرس
+عند فتح القائمة تتحدد الإشعارات كمقروءة تلقائياً
+تحديث الإشعارات كل دقيقة تلقائياً
+إضافة رابط "الإحصائيات" للمشرفين في القائمة
+
+
+ain-al-balad-backend/src/routes/app/main.ts
+إضافة استيراد الـ routes الجديدة:
+tsimport notifications from "./notifications";
+import reactions from "./reactions";
+import stats from "./stats";
+
+3. ميزات جديدة كلياً
+ain-al-balad-backend/src/lib/migrate/sqlite_migrations.ts - Migration v4
+إضافة جداول وحقول جديدة لقاعدة البيانات:
+sql-- حقول جديدة لجدول issues
+ALTER TABLE issues ADD COLUMN title TEXT DEFAULT '';
+ALTER TABLE issues ADD COLUMN updatedAt DATETIME;
+ALTER TABLE issues ADD COLUMN views INTEGER DEFAULT 0;
+
+-- جدول الإشعارات
+CREATE TABLE notifications (
+  notificationsId INTEGER PRIMARY KEY AUTOINCREMENT,
+  usersId INTEGER NOT NULL,
+  issuesId INTEGER,
+  type TEXT NOT NULL,      -- 'comment' | 'status_change' | 'new_issue'
+  message TEXT NOT NULL,
+  isRead BOOLEAN DEFAULT 0,
+  createdAt DATETIME,
+  FOREIGN KEY(usersId) REFERENCES users(usersId),
+  FOREIGN KEY(issuesId) REFERENCES issues(issuesId)
+);
+
+-- جدول تأكيدات المشكلة
+CREATE TABLE reactions (
+  reactionsId INTEGER PRIMARY KEY AUTOINCREMENT,
+  issuesId INTEGER NOT NULL,
+  usersId INTEGER NOT NULL,
+  type TEXT DEFAULT 'confirm',
+  createdAt DATETIME,
+  UNIQUE(issuesId, usersId),   -- كل مستخدم يقدر يأكد مرة واحدة بس
+  FOREIGN KEY(issuesId) REFERENCES issues(issuesId),
+  FOREIGN KEY(usersId) REFERENCES users(usersId)
+);
+
+ain-al-balad-backend/src/routes/app/notifications.ts - جديد كلياً 🔔
+نظام إشعارات كامل يشمل:
+EndpointالوظيفةGET /notificationsجلب إشعارات المستخدم الحالي (آخر 50)PATCH /notifications/read-allتحديد كل الإشعارات كمقروءة
+وتضمين دالة createNotification() يستخدمها باقي الـ routes لإنشاء إشعارات.
+
+ain-al-balad-backend/src/routes/app/reactions.ts - جديد كلياً 👍
+ميزة "أؤكد وجود هذه المشكلة":
+EndpointالوظيفةPOST /issues/:id/reactتأكيد أو إلغاء تأكيد المشكلة (toggle)GET /issues/:id/reactionsجلب عدد التأكيدات وهل أكّد المستخدم الحالي
+
+ain-al-balad-backend/src/routes/app/stats.ts - جديد كلياً 📊
+لوحة إحصائيات للمشرفين:
+EndpointالوظيفةGET /admin/statsإحصائيات شاملة للنظام
+تتضمن:
+
+إجمالي البلاغات / محلولة / معلقة / هذا الشهر
+إجمالي المستخدمين / النشطين / الجدد هذا الشهر
+أكثر 5 مناطق في البلاغات
+بيانات آخر 7 أيام للرسم البياني
+
+
+ain-al-balad-frontend/src/stores/notifications.store.ts - جديد كلياً
+Store جديد لإدارة الإشعارات في الـ frontend:
+
+fetch() - جلب الإشعارات من السيرفر
+markAllRead() - تحديد الكل كمقروء وتحديث الـ UI فوراً
+
+
+ain-al-balad-frontend/src/routes/admin/stats/+page.svelte - جديد كلياً
+صفحة إحصائيات كاملة تعرض:
+
+4 بطاقات: إجمالي البلاغات، المحلولة، قيد المعالجة، المستخدمون
+إحصائيات هذا الشهر ونسبة الحل
+جدول أكثر المناطق بلاغات
+رسم بياني بسيط لآخر 7 أيام
+
+
+ain-al-balad-frontend/src/routes/issue/selected/+page.svelte - ميزة مضافة
+إضافة زر "أؤكد وجود هذه المشكلة" 👍 في صفحة تفاصيل البلاغ:
+
+يظهر للمواطنين فقط على البلاغات غير المحلولة
+يعمل كـ toggle (تأكيد / إلغاء تأكيد)
+يظهر العدد الكلي للمؤكدين
+
+
+ملخص الأرقام
+النوعالعددإصلاحات bugs4ملفات backend محسّنة4ملفات frontend محسّنة2ملفات backend جديدة3ملفات frontend جديدة2جداول قاعدة بيانات جديدة2حقول جديدة في قاعدة البيانات3المجموع20 تغيير
